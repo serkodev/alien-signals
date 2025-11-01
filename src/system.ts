@@ -115,11 +115,12 @@ export function createReactiveSystem({
 	}
 
 	function propagate(link: Link): void {
-		let next = link.nextSub;
+		let currLink: Link = link;
+		let next = currLink.nextSub;
 		const stack: (Link | undefined)[] = [];
 
 		top: do {
-			const sub = link.sub;
+			const sub = currLink.sub;
 			let flags = sub.flags;
 
 			if (!(flags & (ReactiveFlags.RecursedCheck | ReactiveFlags.Recursed | ReactiveFlags.Dirty | ReactiveFlags.Pending))) {
@@ -128,7 +129,7 @@ export function createReactiveSystem({
 				flags = ReactiveFlags.None;
 			} else if (!(flags & ReactiveFlags.RecursedCheck)) {
 				sub.flags = (flags & ~ReactiveFlags.Recursed) | ReactiveFlags.Pending;
-			} else if (!(flags & (ReactiveFlags.Dirty | ReactiveFlags.Pending)) && isValidLink(link, sub)) {
+			} else if (!(flags & (ReactiveFlags.Dirty | ReactiveFlags.Pending)) && isValidLink(currLink, sub)) {
 				sub.flags = flags | (ReactiveFlags.Recursed | ReactiveFlags.Pending);
 				flags &= ReactiveFlags.Mutable;
 			} else {
@@ -142,7 +143,7 @@ export function createReactiveSystem({
 			if (flags & ReactiveFlags.Mutable) {
 				const subSubs = sub.subs;
 				if (subSubs !== undefined) {
-					const nextSub = (link = subSubs).nextSub;
+					const nextSub = (currLink = subSubs).nextSub;
 					if (nextSub !== undefined) {
 						stack.push(next);
 						next = nextSub;
@@ -151,15 +152,15 @@ export function createReactiveSystem({
 				}
 			}
 
-			if ((link = next!) !== undefined) {
-				next = link.nextSub;
+			if ((currLink = next!) !== undefined) {
+				next = currLink.nextSub;
 				continue;
 			}
 
 			while (stack.length) {
-				link = stack.pop()!;
-				if (link !== undefined) {
-					next = link.nextSub;
+				currLink = stack.pop()!;
+				if (currLink !== undefined) {
+					next = currLink.nextSub;
 					continue top;
 				}
 			}
@@ -169,15 +170,17 @@ export function createReactiveSystem({
 	}
 
 	function checkDirty(link: Link, sub: ReactiveNode): boolean {
+		let currLink: Link = link;
+		let currSub: ReactiveNode = sub;
 		const stack: Link[] = [];
 		let checkDepth = 0;
 		let dirty = false;
 
 		top: do {
-			const dep = link.dep;
+			const dep = currLink.dep;
 			const flags = dep.flags;
 
-			if (sub.flags & ReactiveFlags.Dirty) {
+			if (currSub.flags & ReactiveFlags.Dirty) {
 				dirty = true;
 			} else if ((flags & (ReactiveFlags.Mutable | ReactiveFlags.Dirty)) === (ReactiveFlags.Mutable | ReactiveFlags.Dirty)) {
 				if (update(dep)) {
@@ -188,43 +191,44 @@ export function createReactiveSystem({
 					dirty = true;
 				}
 			} else if ((flags & (ReactiveFlags.Mutable | ReactiveFlags.Pending)) === (ReactiveFlags.Mutable | ReactiveFlags.Pending)) {
-				if (link.nextSub !== undefined || link.prevSub !== undefined) {
-					stack.push(link);
+				if (currLink.nextSub !== undefined || currLink.prevSub !== undefined) {
+					stack.push(currLink);
 				}
-				link = dep.deps!;
-				sub = dep;
+				currLink = dep.deps!;
+				currSub = dep;
 				++checkDepth;
 				continue;
 			}
 
 			if (!dirty) {
-				const nextDep = link.nextDep;
+				const nextDep = currLink.nextDep;
 				if (nextDep !== undefined) {
-					link = nextDep;
+					currLink = nextDep;
 					continue;
 				}
 			}
 
-			while (checkDepth--) {
-				const firstSub = sub.subs!;
+			while (checkDepth > 0) {
+				checkDepth--;
+				const firstSub = currSub.subs!;
 				const hasMultipleSubs = firstSub.nextSub !== undefined;
-				link = hasMultipleSubs ? stack.pop()! : firstSub;
+				currLink = hasMultipleSubs ? stack.pop()! : firstSub;
 				if (dirty) {
-					if (update(sub)) {
+					if (update(currSub)) {
 						if (hasMultipleSubs) {
 							shallowPropagate(firstSub);
 						}
-						sub = link.sub;
+						currSub = currLink.sub;
 						continue;
 					}
 					dirty = false;
 				} else {
-					sub.flags &= ~ReactiveFlags.Pending;
+					currSub.flags &= ~ReactiveFlags.Pending;
 				}
-				sub = link.sub;
-				const nextDep = link.nextDep;
+				currSub = currLink.sub;
+				const nextDep = currLink.nextDep;
 				if (nextDep !== undefined) {
-					link = nextDep;
+					currLink = nextDep;
 					continue top;
 				}
 			}
