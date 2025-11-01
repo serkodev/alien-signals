@@ -16,11 +16,6 @@ export interface Link {
 	nextDep: Link | undefined;
 }
 
-interface Stack<T> {
-	value: T;
-	prev: Stack<T> | undefined;
-}
-
 export const enum ReactiveFlags {
 	None = 0,
 	Mutable = 1,
@@ -121,7 +116,7 @@ export function createReactiveSystem({
 
 	function propagate(link: Link): void {
 		let next = link.nextSub;
-		let stack: Stack<Link | undefined> | undefined;
+		const stack: (Link | undefined)[] = [];
 
 		top: do {
 			const sub = link.sub;
@@ -149,7 +144,7 @@ export function createReactiveSystem({
 				if (subSubs !== undefined) {
 					const nextSub = (link = subSubs).nextSub;
 					if (nextSub !== undefined) {
-						stack = { value: next, prev: stack };
+						stack.push(next);
 						next = nextSub;
 					}
 					continue;
@@ -161,9 +156,8 @@ export function createReactiveSystem({
 				continue;
 			}
 
-			while (stack !== undefined) {
-				link = stack.value!;
-				stack = stack.prev;
+			while (stack.length) {
+				link = stack.pop()!;
 				if (link !== undefined) {
 					next = link.nextSub;
 					continue top;
@@ -175,7 +169,7 @@ export function createReactiveSystem({
 	}
 
 	function checkDirty(link: Link, sub: ReactiveNode): boolean {
-		let stack: Stack<Link> | undefined;
+		const stack: Link[] = [];
 		let checkDepth = 0;
 		let dirty = false;
 
@@ -195,7 +189,7 @@ export function createReactiveSystem({
 				}
 			} else if ((flags & (ReactiveFlags.Mutable | ReactiveFlags.Pending)) === (ReactiveFlags.Mutable | ReactiveFlags.Pending)) {
 				if (link.nextSub !== undefined || link.prevSub !== undefined) {
-					stack = { value: link, prev: stack };
+					stack.push(link);
 				}
 				link = dep.deps!;
 				sub = dep;
@@ -214,12 +208,7 @@ export function createReactiveSystem({
 			while (checkDepth--) {
 				const firstSub = sub.subs!;
 				const hasMultipleSubs = firstSub.nextSub !== undefined;
-				if (hasMultipleSubs) {
-					link = stack!.value;
-					stack = stack!.prev;
-				} else {
-					link = firstSub;
-				}
+				link = hasMultipleSubs ? stack.pop()! : firstSub;
 				if (dirty) {
 					if (update(sub)) {
 						if (hasMultipleSubs) {
