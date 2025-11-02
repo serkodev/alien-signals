@@ -248,8 +248,9 @@ export function createReactiveSystem({
 	}
 
 	function shallowPropagate(link: Link): void {
-		do {
-			const sub = link.sub;
+		let curr: Link | undefined = link;
+		while (curr !== undefined) {
+			const sub = curr.sub;
 			const flags = sub.flags;
 			if ((flags & (ReactiveFlags.Pending | ReactiveFlags.Dirty)) === ReactiveFlags.Pending) {
 				sub.flags = flags | ReactiveFlags.Dirty;
@@ -257,6 +258,7 @@ export function createReactiveSystem({
 					notify(sub);
 				}
 			}
-		} while ((link = link.nextSub!) !== undefined);
+			curr = curr.nextSub;
+		}
 	}
 }
