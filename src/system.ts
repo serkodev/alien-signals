@@ -129,9 +129,17 @@ export function createReactiveSystem({
 				flags = ReactiveFlags.None;
 			} else if (!(flags & ReactiveFlags.RecursedCheck)) {
 				sub.flags = (flags & ~ReactiveFlags.Recursed) | ReactiveFlags.Pending;
-			} else if (!(flags & (ReactiveFlags.Dirty | ReactiveFlags.Pending)) && isValidLink(currLink, sub)) {
-				sub.flags = flags | (ReactiveFlags.Recursed | ReactiveFlags.Pending);
-				flags &= ReactiveFlags.Mutable;
+			} else if (!(flags & (ReactiveFlags.Dirty | ReactiveFlags.Pending))) {
+				let linkCheck = sub.depsTail;
+				while (linkCheck !== undefined && linkCheck !== currLink) {
+					linkCheck = linkCheck.prevDep;
+				}
+				if (linkCheck !== undefined) {
+					sub.flags = flags | (ReactiveFlags.Recursed | ReactiveFlags.Pending);
+					flags &= ReactiveFlags.Mutable;
+				} else {
+					flags = ReactiveFlags.None;
+				}
 			} else {
 				flags = ReactiveFlags.None;
 			}
@@ -248,16 +256,5 @@ export function createReactiveSystem({
 				}
 			}
 		} while ((link = link.nextSub!) !== undefined);
-	}
-
-	function isValidLink(checkLink: Link, sub: ReactiveNode): boolean {
-		let link = sub.depsTail;
-		while (link !== undefined) {
-			if (link === checkLink) {
-				return true;
-			}
-			link = link.prevDep;
-		}
-		return false;
 	}
 }
