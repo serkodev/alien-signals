@@ -35,6 +35,9 @@ export function createReactiveSystem({
 	notify(sub: ReactiveNode): void;
 	unwatched(sub: ReactiveNode): void;
 }) {
+	const stackProp: (Link | undefined)[] = [];
+	const stackDirty: Link[] = [];
+
 	return {
 		link,
 		unlink,
@@ -117,7 +120,7 @@ export function createReactiveSystem({
 	function propagate(link: Link): void {
 		let currLink: Link = link;
 		let next = currLink.nextSub;
-		const stack: (Link | undefined)[] = [];
+		let stackIndex = 0;
 
 		top: do {
 			const sub = currLink.sub;
@@ -153,20 +156,19 @@ export function createReactiveSystem({
 				if (subSubs !== undefined) {
 					const nextSub = (currLink = subSubs).nextSub;
 					if (nextSub !== undefined) {
-						stack.push(next);
+						stackProp[stackIndex++] = next;
 						next = nextSub;
 					}
 					continue;
 				}
 			}
-
 			if ((currLink = next!) !== undefined) {
 				next = currLink.nextSub;
 				continue;
 			}
 
-			while (stack.length) {
-				currLink = stack.pop()!;
+			while (stackIndex > 0) {
+				currLink = stackProp[--stackIndex]!;
 				if (currLink !== undefined) {
 					next = currLink.nextSub;
 					continue top;
@@ -180,7 +182,7 @@ export function createReactiveSystem({
 	function checkDirty(link: Link, sub: ReactiveNode): boolean {
 		let currLink: Link = link;
 		let currSub: ReactiveNode = sub;
-		const stack: Link[] = [];
+		let stackIndex = 0;
 		let checkDepth = 0;
 		let dirty = false;
 
@@ -200,11 +202,11 @@ export function createReactiveSystem({
 				}
 			} else if ((flags & (ReactiveFlags.Mutable | ReactiveFlags.Pending)) === (ReactiveFlags.Mutable | ReactiveFlags.Pending)) {
 				if (currLink.nextSub !== undefined || currLink.prevSub !== undefined) {
-					stack.push(currLink);
+					stackDirty[stackIndex++] = currLink;
 				}
 				currLink = dep.deps!;
 				currSub = dep;
-				++checkDepth;
+				checkDepth++;
 				continue;
 			}
 
@@ -220,7 +222,7 @@ export function createReactiveSystem({
 				checkDepth--;
 				const firstSub = currSub.subs!;
 				const hasMultipleSubs = firstSub.nextSub !== undefined;
-				currLink = hasMultipleSubs ? stack.pop()! : firstSub;
+				currLink = hasMultipleSubs ? stackDirty[--stackIndex] : firstSub;
 				if (dirty) {
 					if (update(currSub)) {
 						if (hasMultipleSubs) {
