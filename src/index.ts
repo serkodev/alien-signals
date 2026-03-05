@@ -555,7 +555,18 @@ function computedOper<T>(this: ComputedNode<T>): T {
 	}
 	const sub = activeSub;
 	if (sub !== undefined) {
-		link(this, sub, cycle);
+		const prevDep = sub.depsTail;
+		if (prevDep !== undefined && prevDep.dep === (this as ReactiveNode)) {
+			// Same dep as last — skip
+		} else {
+			const nextDep = prevDep !== undefined ? prevDep.nextDep : sub.deps;
+			if (nextDep !== undefined && nextDep.dep === (this as ReactiveNode)) {
+				nextDep.version = cycle;
+				sub.depsTail = nextDep;
+			} else {
+				link(this, sub, cycle);
+			}
+		}
 	}
 	return this.value!;
 }
