@@ -57,14 +57,25 @@ export function createReactiveSystem({
 
 	function link(dep: ReactiveNode, sub: ReactiveNode, version: number): void {
 		const prevDep = sub.depsTail;
-		if (prevDep !== undefined && prevDep.dep === dep) {
-			return;
-		}
-		const nextDep = prevDep !== undefined ? prevDep.nextDep : sub.deps;
-		if (nextDep !== undefined && nextDep.dep === dep) {
-			nextDep.version = version;
-			sub.depsTail = nextDep;
-			return;
+		let nextDep: Link | undefined;
+
+		if (prevDep === undefined) {
+			nextDep = sub.deps;
+			if (nextDep !== undefined && nextDep.dep === dep) {
+				nextDep.version = version;
+				sub.depsTail = nextDep;
+				return;
+			}
+		} else {
+			if (prevDep.dep === dep) {
+				return;
+			}
+			nextDep = prevDep.nextDep;
+			if (nextDep !== undefined && nextDep.dep === dep) {
+				nextDep.version = version;
+				sub.depsTail = nextDep;
+				return;
+			}
 		}
 		const prevSub = dep.subsTail;
 		if (prevSub !== undefined && prevSub.version === version && prevSub.sub === sub) {
@@ -199,11 +210,7 @@ export function createReactiveSystem({
 		let dirty = false;
 
 		do {
-			if (
-				link.nextDep !== undefined
-				|| link.nextSub !== undefined
-				|| link.prevSub !== undefined
-			) {
+			if (link.nextDep !== undefined) {
 				return checkDirtySlow(rootLink, rootSub);
 			}
 
@@ -215,6 +222,9 @@ export function createReactiveSystem({
 				!(subFlags & ReactiveFlags.Dirty)
 				&& flags === (ReactiveFlags.Mutable | ReactiveFlags.Pending)
 			) {
+				if (dep.subs !== dep.subsTail) {
+					return checkDirtySlow(rootLink, rootSub);
+				}
 				link = dep.deps!;
 				sub = dep;
 				++checkDepth;
@@ -226,14 +236,33 @@ export function createReactiveSystem({
 			} else if (
 				flags === (ReactiveFlags.Mutable | ReactiveFlags.Dirty)
 			) {
-				dirty = dep.depsTail !== undefined
-					? updateComputedNode(dep)
-					: updateSignalNode(dep);
+				if ((
+					dep.depsTail !== undefined
+						? updateComputedNode(dep)
+						: updateSignalNode(dep)
+				)) {
+					const depSubs = dep.subs!;
+					if (depSubs.nextSub !== undefined) {
+						shallowPropagate(depSubs);
+					}
+					dirty = true;
+				}
 			} else if ((flags & (ReactiveFlags.Mutable | ReactiveFlags.Dirty)) === (ReactiveFlags.Mutable | ReactiveFlags.Dirty)) {
-				dirty = dep.depsTail !== undefined
-					? updateComputedNode(dep)
-					: updateSignalNode(dep);
+				if ((
+					dep.depsTail !== undefined
+						? updateComputedNode(dep)
+						: updateSignalNode(dep)
+				)) {
+					const depSubs = dep.subs!;
+					if (depSubs.nextSub !== undefined) {
+						shallowPropagate(depSubs);
+					}
+					dirty = true;
+				}
 			} else if ((flags & (ReactiveFlags.Mutable | ReactiveFlags.Pending)) === (ReactiveFlags.Mutable | ReactiveFlags.Pending)) {
+				if (dep.subs !== dep.subsTail) {
+					return checkDirtySlow(rootLink, rootSub);
+				}
 				link = dep.deps!;
 				sub = dep;
 				++checkDepth;
@@ -243,21 +272,23 @@ export function createReactiveSystem({
 			break;
 		} while (true);
 
-		while (checkDepth--) {
-			const subSubs = sub.subs!;
-			if (dirty) {
-				if (
-					sub.depsTail !== undefined
-						? updateComputedNode(sub)
-						: updateSignalNode(sub)
-				) {
+		if (dirty) {
+			while (checkDepth !== 0) {
+				const subSubs = sub.subs!;
+				--checkDepth;
+				if (!updateComputedNode(sub)) {
+					dirty = false;
 					sub = subSubs.sub;
-					continue;
+					break;
 				}
-				dirty = false;
-			} else {
-				sub.flags &= ~ReactiveFlags.Pending;
+				sub = subSubs.sub;
 			}
+		}
+
+		while (checkDepth !== 0) {
+			const subSubs = sub.subs!;
+			--checkDepth;
+			sub.flags &= ~ReactiveFlags.Pending;
 			sub = subSubs.sub;
 		}
 
