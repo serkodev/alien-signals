@@ -215,7 +215,28 @@ function checkDirty(l: Link, sub: ReactiveNode): boolean {
 				l = firstSub;
 			}
 			if (dirty) {
-				if (updateComputedDirect(sub as ComputedNode)) {
+				// Inlined updateComputedDirect to avoid ~990 function calls
+				const c = sub as ComputedNode;
+				c.depsTail = undefined;
+				c.flags = ReactiveFlags.Mutable | ReactiveFlags.RecursedCheck;
+				activeSub = c;
+				const oldValue = c.value;
+				const newValue = c.getter(oldValue);
+				c.value = newValue;
+				c.flags = ReactiveFlags.Mutable;
+				const dt = c.depsTail;
+				if (dt !== undefined) {
+					let d = dt.nextDep;
+					while (d !== undefined) {
+						d = unlinkNode(d, c);
+					}
+				} else {
+					let d = c.deps;
+					while (d !== undefined) {
+						d = unlinkNode(d, c);
+					}
+				}
+				if (oldValue !== newValue) {
 					if (hasMultipleSubs) {
 						shallowPropagate(firstSub);
 					}
