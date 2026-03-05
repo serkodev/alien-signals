@@ -1,4 +1,5 @@
-import { createReactiveSystem, ReactiveFlags, type ReactiveNode } from './system.js';
+import { type ReactiveNode, type Link, ReactiveFlags } from './system.js';
+export { createReactiveSystem, ReactiveFlags, type ReactiveNode, type Link } from './system.js';
 
 interface EffectNode extends ReactiveNode {
 	fn(): void;
@@ -21,51 +22,274 @@ let queuedLength = 0;
 let activeSub: ReactiveNode | undefined;
 
 const queued: (EffectNode | undefined)[] = [];
-const {
-	link,
-	unlink,
-	propagate,
-	checkDirty,
-	shallowPropagate,
-} = createReactiveSystem({
-	update(node: SignalNode | ComputedNode): boolean {
-		if (node.depsTail !== undefined) {
-			return updateComputed(node as ComputedNode);
+
+// === System functions (inlined to avoid closure/callback overhead) ===
+
+function link(dep: ReactiveNode, sub: ReactiveNode, version: number): void {
+	const prevDep = sub.depsTail;
+	if (prevDep !== undefined && prevDep.dep === dep) {
+		return;
+	}
+	const nextDep = prevDep !== undefined ? prevDep.nextDep : sub.deps;
+	if (nextDep !== undefined && nextDep.dep === dep) {
+		nextDep.version = version;
+		sub.depsTail = nextDep;
+		return;
+	}
+	const prevSub = dep.subsTail;
+	if (prevSub !== undefined && prevSub.version === version && prevSub.sub === sub) {
+		return;
+	}
+	const newLink
+		= sub.depsTail
+		= dep.subsTail
+		= {
+			version,
+			dep,
+			sub,
+			prevDep,
+			nextDep,
+			prevSub,
+			nextSub: undefined,
+		};
+	if (nextDep !== undefined) {
+		nextDep.prevDep = newLink;
+	}
+	if (prevDep !== undefined) {
+		prevDep.nextDep = newLink;
+	} else {
+		sub.deps = newLink;
+	}
+	if (prevSub !== undefined) {
+		prevSub.nextSub = newLink;
+	} else {
+		dep.subs = newLink;
+	}
+}
+
+function unlinkNode(l: Link, sub = l.sub): Link | undefined {
+	const dep = l.dep;
+	const prevDep = l.prevDep;
+	const nextDep = l.nextDep;
+	const nextSub = l.nextSub;
+	const prevSub = l.prevSub;
+	if (nextDep !== undefined) {
+		nextDep.prevDep = prevDep;
+	} else {
+		sub.depsTail = prevDep;
+	}
+	if (prevDep !== undefined) {
+		prevDep.nextDep = nextDep;
+	} else {
+		sub.deps = nextDep;
+	}
+	if (nextSub !== undefined) {
+		nextSub.prevSub = prevSub;
+	} else {
+		dep.subsTail = prevSub;
+	}
+	if (prevSub !== undefined) {
+		prevSub.nextSub = nextSub;
+	} else if ((dep.subs = nextSub) === undefined) {
+		handleUnwatched(dep);
+	}
+	return nextDep;
+}
+
+interface StackNode {
+	value: Link | undefined;
+	prev: StackNode | undefined;
+}
+
+function propagate(l: Link): void {
+	let next = l.nextSub;
+	let stack: StackNode | undefined;
+
+	top: do {
+		const sub = l.sub;
+		let flags = sub.flags;
+
+		if (!(flags & (ReactiveFlags.RecursedCheck | ReactiveFlags.Recursed | ReactiveFlags.Dirty | ReactiveFlags.Pending))) {
+			sub.flags = flags | ReactiveFlags.Pending;
+		} else if (!(flags & (ReactiveFlags.RecursedCheck | ReactiveFlags.Recursed))) {
+			flags = ReactiveFlags.None;
+		} else if (!(flags & ReactiveFlags.RecursedCheck)) {
+			sub.flags = (flags & ~ReactiveFlags.Recursed) | ReactiveFlags.Pending;
+		} else if (!(flags & (ReactiveFlags.Dirty | ReactiveFlags.Pending)) && isValidLink(l, sub)) {
+			sub.flags = flags | (ReactiveFlags.Recursed | ReactiveFlags.Pending);
+			flags &= ReactiveFlags.Mutable;
 		} else {
-			return updateSignal(node as SignalNode);
+			flags = ReactiveFlags.None;
 		}
-	},
-	notify(effect: EffectNode) {
-		let insertIndex = queuedLength;
-		let firstInsertedIndex = insertIndex;
 
-		do {
-			queued[insertIndex++] = effect;
-			effect.flags &= ~ReactiveFlags.Watching;
-			effect = effect.subs?.sub as EffectNode;
-			if (effect === undefined || !(effect.flags & ReactiveFlags.Watching)) {
-				break;
+		if (flags & ReactiveFlags.Watching) {
+			notifyEffect(sub as EffectNode);
+		}
+
+		if (flags & ReactiveFlags.Mutable) {
+			const subSubs = sub.subs;
+			if (subSubs !== undefined) {
+				const nextSub = (l = subSubs).nextSub;
+				if (nextSub !== undefined) {
+					stack = { value: next, prev: stack };
+					next = nextSub;
+				}
+				continue;
 			}
-		} while (true);
-
-		queuedLength = insertIndex;
-
-		while (firstInsertedIndex < --insertIndex) {
-			const left = queued[firstInsertedIndex];
-			queued[firstInsertedIndex++] = queued[insertIndex];
-			queued[insertIndex] = left;
 		}
-	},
-	unwatched(node) {
-		if (!(node.flags & ReactiveFlags.Mutable)) {
-			effectScopeOper.call(node);
-		} else if (node.depsTail !== undefined) {
-			node.depsTail = undefined;
-			node.flags = ReactiveFlags.Mutable | ReactiveFlags.Dirty;
-			purgeDeps(node);
+
+		if ((l = next!) !== undefined) {
+			next = l.nextSub;
+			continue;
 		}
-	},
-});
+
+		while (stack !== undefined) {
+			l = stack.value!;
+			stack = stack.prev;
+			if (l !== undefined) {
+				next = l.nextSub;
+				continue top;
+			}
+		}
+
+		break;
+	} while (true);
+}
+
+function checkDirty(l: Link, sub: ReactiveNode): boolean {
+	let stack: StackNode | undefined;
+	let checkDepth = 0;
+	let dirty = false;
+
+	top: do {
+		const dep = l.dep;
+		const flags = dep.flags;
+
+		if (sub.flags & ReactiveFlags.Dirty) {
+			dirty = true;
+		} else if ((flags & (ReactiveFlags.Mutable | ReactiveFlags.Dirty)) === (ReactiveFlags.Mutable | ReactiveFlags.Dirty)) {
+			// Direct dispatch: check depsTail to determine computed vs signal
+			const updated = dep.depsTail !== undefined
+				? updateComputed(dep as ComputedNode)
+				: updateSignal(dep as SignalNode);
+			if (updated) {
+				const subs = dep.subs!;
+				if (subs.nextSub !== undefined) {
+					shallowPropagate(subs);
+				}
+				dirty = true;
+			}
+		} else if ((flags & (ReactiveFlags.Mutable | ReactiveFlags.Pending)) === (ReactiveFlags.Mutable | ReactiveFlags.Pending)) {
+			if (l.nextSub !== undefined || l.prevSub !== undefined) {
+				stack = { value: l, prev: stack };
+			}
+			l = dep.deps!;
+			sub = dep;
+			++checkDepth;
+			continue;
+		}
+
+		if (!dirty) {
+			const nextDep = l.nextDep;
+			if (nextDep !== undefined) {
+				l = nextDep;
+				continue;
+			}
+		}
+
+		while (checkDepth--) {
+			const firstSub = sub.subs!;
+			const hasMultipleSubs = firstSub.nextSub !== undefined;
+			if (hasMultipleSubs) {
+				l = stack!.value!;
+				stack = stack!.prev;
+			} else {
+				l = firstSub;
+			}
+			if (dirty) {
+				// In ascending phase, sub is always a computed
+				if (updateComputed(sub as ComputedNode)) {
+					if (hasMultipleSubs) {
+						shallowPropagate(firstSub);
+					}
+					sub = l.sub;
+					continue;
+				}
+				dirty = false;
+			} else {
+				sub.flags &= ~ReactiveFlags.Pending;
+			}
+			sub = l.sub;
+			const nextDep = l.nextDep;
+			if (nextDep !== undefined) {
+				l = nextDep;
+				continue top;
+			}
+		}
+
+		return dirty;
+	} while (true);
+}
+
+function shallowPropagate(l: Link): void {
+	do {
+		const sub = l.sub;
+		const flags = sub.flags;
+		if ((flags & (ReactiveFlags.Pending | ReactiveFlags.Dirty)) === ReactiveFlags.Pending) {
+			sub.flags = flags | ReactiveFlags.Dirty;
+			if ((flags & (ReactiveFlags.Watching | ReactiveFlags.RecursedCheck)) === ReactiveFlags.Watching) {
+				notifyEffect(sub as EffectNode);
+			}
+		}
+	} while ((l = l.nextSub!) !== undefined);
+}
+
+function isValidLink(checkLink: Link, sub: ReactiveNode): boolean {
+	let l = sub.depsTail;
+	while (l !== undefined) {
+		if (l === checkLink) {
+			return true;
+		}
+		l = l.prevDep;
+	}
+	return false;
+}
+
+// === Notify / Unwatched ===
+
+function notifyEffect(effect: EffectNode): void {
+	let insertIndex = queuedLength;
+	let firstInsertedIndex = insertIndex;
+
+	do {
+		queued[insertIndex++] = effect;
+		effect.flags &= ~ReactiveFlags.Watching;
+		effect = effect.subs?.sub as EffectNode;
+		if (effect === undefined || !(effect.flags & ReactiveFlags.Watching)) {
+			break;
+		}
+	} while (true);
+
+	queuedLength = insertIndex;
+
+	while (firstInsertedIndex < --insertIndex) {
+		const left = queued[firstInsertedIndex];
+		queued[firstInsertedIndex++] = queued[insertIndex];
+		queued[insertIndex] = left;
+	}
+}
+
+function handleUnwatched(node: ReactiveNode): void {
+	if (!(node.flags & ReactiveFlags.Mutable)) {
+		effectScopeOper.call(node);
+	} else if (node.depsTail !== undefined) {
+		node.depsTail = undefined;
+		node.flags = ReactiveFlags.Mutable | ReactiveFlags.Dirty;
+		purgeDeps(node);
+	}
+}
+
+// === Public API ===
 
 export function getActiveSub(): ReactiveNode | undefined {
 	return activeSub;
@@ -196,10 +420,10 @@ export function trigger(fn: () => void) {
 		fn();
 	} finally {
 		activeSub = prevSub;
-		let link = sub.deps;
-		while (link !== undefined) {
-			const dep = link.dep;
-			link = unlink(link, sub);
+		let l = sub.deps;
+		while (l !== undefined) {
+			const dep = l.dep;
+			l = unlinkNode(l, sub);
 			const subs = dep.subs;
 			if (subs !== undefined) {
 				sub.flags = ReactiveFlags.None;
@@ -357,7 +581,7 @@ function effectScopeOper(this: ReactiveNode): void {
 	purgeDeps(this);
 	const sub = this.subs;
 	if (sub !== undefined) {
-		unlink(sub);
+		unlinkNode(sub);
 	}
 }
 
@@ -365,6 +589,6 @@ function purgeDeps(sub: ReactiveNode) {
 	const depsTail = sub.depsTail;
 	let dep = depsTail !== undefined ? depsTail.nextDep : sub.deps;
 	while (dep !== undefined) {
-		dep = unlink(dep, sub);
+		dep = unlinkNode(dep, sub);
 	}
 }
