@@ -161,7 +161,6 @@ function checkDirty(l: Link, sub: ReactiveNode): boolean {
 	let stack: StackNode | undefined;
 	let checkDepth = 0;
 	let dirty = false;
-	let erroredComputed: ComputedNode | undefined;
 	++cycle;
 
 	try {
@@ -174,7 +173,6 @@ function checkDirty(l: Link, sub: ReactiveNode): boolean {
 		} else if ((flags & (ReactiveFlags.Mutable | ReactiveFlags.Dirty)) === (ReactiveFlags.Mutable | ReactiveFlags.Dirty)) {
 			// Direct dispatch: check depsTail to determine computed vs signal
 			if (dep.depsTail !== undefined) {
-				erroredComputed = dep as ComputedNode;
 				if (updateComputedDirect(dep as ComputedNode)) {
 					const subs = dep.subs!;
 					if (subs.nextSub !== undefined) {
@@ -182,7 +180,6 @@ function checkDirty(l: Link, sub: ReactiveNode): boolean {
 					}
 					dirty = true;
 				}
-				erroredComputed = undefined;
 			} else if (updateSignal(dep as SignalNode)) {
 				const subs = dep.subs!;
 				if (subs.nextSub !== undefined) {
@@ -218,17 +215,13 @@ function checkDirty(l: Link, sub: ReactiveNode): boolean {
 				l = firstSub;
 			}
 			if (dirty) {
-				// In ascending phase, sub is always a computed
-				erroredComputed = sub as ComputedNode;
 				if (updateComputedDirect(sub as ComputedNode)) {
-					erroredComputed = undefined;
 					if (hasMultipleSubs) {
 						shallowPropagate(firstSub);
 					}
 					sub = l.sub;
 					continue;
 				}
-				erroredComputed = undefined;
 				dirty = false;
 			} else {
 				sub.flags &= ~ReactiveFlags.Pending;
@@ -243,11 +236,14 @@ function checkDirty(l: Link, sub: ReactiveNode): boolean {
 
 		return dirty;
 	} while (true);
-	} finally {
-		if (erroredComputed !== undefined) {
-			erroredComputed.flags &= ~ReactiveFlags.RecursedCheck;
-			purgeDeps(erroredComputed);
+	} catch (e) {
+		// activeSub points to the computed whose getter threw
+		if (activeSub !== prevActiveSub) {
+			(activeSub as ComputedNode).flags &= ~ReactiveFlags.RecursedCheck;
+			purgeDeps(activeSub!);
 		}
+		throw e;
+	} finally {
 		activeSub = prevActiveSub;
 	}
 }
