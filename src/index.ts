@@ -449,7 +449,18 @@ function updateComputed(c: ComputedNode): boolean {
 	} finally {
 		activeSub = prevSub;
 		c.flags &= ~ReactiveFlags.RecursedCheck;
-		purgeDeps(c);
+		const dt = c.depsTail;
+		if (dt !== undefined) {
+			let d = dt.nextDep;
+			while (d !== undefined) {
+				d = unlinkNode(d, c);
+			}
+		} else {
+			let d = c.deps;
+			while (d !== undefined) {
+				d = unlinkNode(d, c);
+			}
+		}
 	}
 }
 
@@ -477,7 +488,18 @@ function run(e: EffectNode): void {
 		} finally {
 			activeSub = prevSub;
 			e.flags &= ~ReactiveFlags.RecursedCheck;
-			purgeDeps(e);
+			const dt = e.depsTail;
+			if (dt !== undefined) {
+				let d = dt.nextDep;
+				while (d !== undefined) {
+					d = unlinkNode(d, e);
+				}
+			} else {
+				let d = e.deps;
+				while (d !== undefined) {
+					d = unlinkNode(d, e);
+				}
+			}
 		}
 	} else {
 		e.flags = ReactiveFlags.Watching;
