@@ -33,13 +33,20 @@ export const enum ReactiveFlags {
 
 export function createReactiveSystem({
 	update,
+	updateComputed,
+	updateSignal,
 	notify,
 	unwatched,
 }: {
 	update(sub: ReactiveNode): boolean;
+	updateComputed?(sub: ReactiveNode): boolean;
+	updateSignal?(sub: ReactiveNode): boolean;
 	notify(sub: ReactiveNode): void;
 	unwatched(sub: ReactiveNode): void;
 }) {
+	const updateComputedNode = updateComputed ?? update;
+	const updateSignalNode = updateSignal ?? update;
+
 	return {
 		link,
 		unlink,
@@ -175,6 +182,89 @@ export function createReactiveSystem({
 	}
 
 	function checkDirty(link: Link, sub: ReactiveNode): boolean {
+		if (
+			link.nextDep === undefined
+			&& link.nextSub === undefined
+			&& link.prevSub === undefined
+		) {
+			return checkDirtyFastByType(link, sub);
+		}
+		return checkDirtySlow(link, sub);
+	}
+
+	function checkDirtyFastByType(rootLink: Link, rootSub: ReactiveNode): boolean {
+		let link = rootLink;
+		let sub = rootSub;
+		let checkDepth = 0;
+		let dirty = false;
+
+		do {
+			if (
+				link.nextDep !== undefined
+				|| link.nextSub !== undefined
+				|| link.prevSub !== undefined
+			) {
+				return checkDirtySlow(rootLink, rootSub);
+			}
+
+			const dep = link.dep;
+			const flags = dep.flags;
+			const subFlags = sub.flags;
+
+			if (
+				!(subFlags & ReactiveFlags.Dirty)
+				&& flags === (ReactiveFlags.Mutable | ReactiveFlags.Pending)
+			) {
+				link = dep.deps!;
+				sub = dep;
+				++checkDepth;
+				continue;
+			}
+
+			if (subFlags & ReactiveFlags.Dirty) {
+				dirty = true;
+			} else if (
+				flags === (ReactiveFlags.Mutable | ReactiveFlags.Dirty)
+			) {
+				dirty = dep.depsTail !== undefined
+					? updateComputedNode(dep)
+					: updateSignalNode(dep);
+			} else if ((flags & (ReactiveFlags.Mutable | ReactiveFlags.Dirty)) === (ReactiveFlags.Mutable | ReactiveFlags.Dirty)) {
+				dirty = dep.depsTail !== undefined
+					? updateComputedNode(dep)
+					: updateSignalNode(dep);
+			} else if ((flags & (ReactiveFlags.Mutable | ReactiveFlags.Pending)) === (ReactiveFlags.Mutable | ReactiveFlags.Pending)) {
+				link = dep.deps!;
+				sub = dep;
+				++checkDepth;
+				continue;
+			}
+
+			break;
+		} while (true);
+
+		while (checkDepth--) {
+			const subSubs = sub.subs!;
+			if (dirty) {
+				if (
+					sub.depsTail !== undefined
+						? updateComputedNode(sub)
+						: updateSignalNode(sub)
+				) {
+					sub = subSubs.sub;
+					continue;
+				}
+				dirty = false;
+			} else {
+				sub.flags &= ~ReactiveFlags.Pending;
+			}
+			sub = subSubs.sub;
+		}
+
+		return dirty;
+	}
+
+	function checkDirtySlow(link: Link, sub: ReactiveNode): boolean {
 		let stack: Stack<Link> | undefined;
 		let checkDepth = 0;
 		let dirty = false;

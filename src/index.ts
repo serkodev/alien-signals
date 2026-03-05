@@ -35,6 +35,12 @@ const {
 			return updateSignal(node as SignalNode);
 		}
 	},
+	updateComputed(node: ReactiveNode): boolean {
+		return updateComputed(node as ComputedNode);
+	},
+	updateSignal(node: ReactiveNode): boolean {
+		return updateSignal(node as SignalNode);
+	},
 	notify(effect: EffectNode) {
 		let insertIndex = queuedLength;
 		let firstInsertedIndex = insertIndex;
