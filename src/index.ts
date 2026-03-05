@@ -219,19 +219,37 @@ export function trigger(fn: () => void) {
 }
 
 function updateComputed(c: ComputedNode): boolean {
-	++cycle;
 	c.depsTail = undefined;
 	c.flags = ReactiveFlags.Mutable | ReactiveFlags.RecursedCheck;
 	const prevSub = activeSub;
 	activeSub = c;
+	const oldValue = c.value;
 	try {
-		const oldValue = c.value;
-		return oldValue !== (c.value = c.getter(oldValue));
-	} finally {
+		c.value = c.getter(oldValue);
+	} catch (error) {
 		activeSub = prevSub;
 		c.flags &= ~ReactiveFlags.RecursedCheck;
+		const depsTail = c.depsTail as ReactiveNode['depsTail'];
+		if (
+			depsTail !== undefined
+				? depsTail.nextDep !== undefined
+				: c.deps !== undefined
+		) {
+			purgeDeps(c);
+		}
+		throw error;
+	}
+	activeSub = prevSub;
+	c.flags &= ~ReactiveFlags.RecursedCheck;
+	const depsTail = c.depsTail as ReactiveNode['depsTail'];
+	if (
+		depsTail !== undefined
+			? depsTail.nextDep !== undefined
+			: c.deps !== undefined
+	) {
 		purgeDeps(c);
 	}
+	return oldValue !== c.value;
 }
 
 function updateSignal(s: SignalNode): boolean {
@@ -248,7 +266,6 @@ function run(e: EffectNode): void {
 			&& checkDirty(e.deps!, e)
 		)
 	) {
-		++cycle;
 		e.depsTail = undefined;
 		e.flags = ReactiveFlags.Watching | ReactiveFlags.RecursedCheck;
 		const prevSub = activeSub;
@@ -258,7 +275,14 @@ function run(e: EffectNode): void {
 		} finally {
 			activeSub = prevSub;
 			e.flags &= ~ReactiveFlags.RecursedCheck;
-			purgeDeps(e);
+			const depsTail = e.depsTail as ReactiveNode['depsTail'];
+			if (
+				depsTail !== undefined
+					? depsTail.nextDep !== undefined
+					: e.deps !== undefined
+			) {
+				purgeDeps(e);
+			}
 		}
 	} else {
 		e.flags = ReactiveFlags.Watching;
@@ -267,6 +291,9 @@ function run(e: EffectNode): void {
 
 function flush(): void {
 	try {
+		if (notifyIndex < queuedLength) {
+			++cycle;
+		}
 		while (notifyIndex < queuedLength) {
 			const effect = queued[notifyIndex]!;
 			queued[notifyIndex++] = undefined;
@@ -295,6 +322,7 @@ function computedOper<T>(this: ComputedNode<T>): T {
 			)
 		)
 	) {
+		++cycle;
 		if (updateComputed(this)) {
 			const subs = this.subs;
 			if (subs !== undefined) {
