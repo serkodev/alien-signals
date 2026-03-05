@@ -50,10 +50,12 @@ const {
 
 		queuedLength = insertIndex;
 
-		while (firstInsertedIndex < --insertIndex) {
-			const left = queued[firstInsertedIndex];
-			queued[firstInsertedIndex++] = queued[insertIndex];
-			queued[insertIndex] = left;
+		if (insertIndex - firstInsertedIndex > 1) {
+			while (firstInsertedIndex < --insertIndex) {
+				const left = queued[firstInsertedIndex];
+				queued[firstInsertedIndex++] = queued[insertIndex];
+				queued[insertIndex] = left;
+			}
 		}
 	},
 	unwatched(node) {
@@ -214,7 +216,8 @@ function updateComputed(c: ComputedNode): boolean {
 	++cycle;
 	c.depsTail = undefined;
 	c.flags = ReactiveFlags.Mutable | ReactiveFlags.RecursedCheck;
-	const prevSub = setActiveSub(c);
+	const prevSub = activeSub;
+	activeSub = c;
 	try {
 		const oldValue = c.value;
 		return oldValue !== (c.value = c.getter(oldValue));
@@ -242,7 +245,8 @@ function run(e: EffectNode): void {
 		++cycle;
 		e.depsTail = undefined;
 		e.flags = ReactiveFlags.Watching | ReactiveFlags.RecursedCheck;
-		const prevSub = setActiveSub(e);
+		const prevSub = activeSub;
+		activeSub = e;
 		try {
 			(e as EffectNode).fn();
 		} finally {
@@ -293,7 +297,8 @@ function computedOper<T>(this: ComputedNode<T>): T {
 		}
 	} else if (!flags) {
 		this.flags = ReactiveFlags.Mutable | ReactiveFlags.RecursedCheck;
-		const prevSub = setActiveSub(this);
+		const prevSub = activeSub;
+		activeSub = this;
 		try {
 			this.value = this.getter();
 		} finally {
