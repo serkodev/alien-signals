@@ -35,13 +35,14 @@ const {
 			return updateSignal(node as SignalNode);
 		}
 	},
-	updateComputed(node: ReactiveNode): boolean {
-		return updateComputed(node as ComputedNode);
-	},
-	updateSignal(node: ReactiveNode): boolean {
-		return updateSignal(node as SignalNode);
-	},
 	notify(effect: EffectNode) {
+		const nextEffect = effect.subs?.sub as EffectNode | undefined;
+		if (nextEffect === undefined || !(nextEffect.flags & ReactiveFlags.Watching)) {
+			queued[queuedLength++] = effect;
+			effect.flags &= ~ReactiveFlags.Watching;
+			return;
+		}
+
 		let insertIndex = queuedLength;
 		let firstInsertedIndex = insertIndex;
 
@@ -290,16 +291,17 @@ function run(e: EffectNode): void {
 }
 
 function flush(): void {
+	if (notifyIndex < queuedLength) {
+		++cycle;
+	}
+
 	try {
-		if (notifyIndex < queuedLength) {
-			++cycle;
-		}
 		while (notifyIndex < queuedLength) {
 			const effect = queued[notifyIndex]!;
 			queued[notifyIndex++] = undefined;
 			run(effect);
 		}
-	} finally {
+	} catch (error) {
 		while (notifyIndex < queuedLength) {
 			const effect = queued[notifyIndex]!;
 			queued[notifyIndex++] = undefined;
@@ -307,11 +309,40 @@ function flush(): void {
 		}
 		notifyIndex = 0;
 		queuedLength = 0;
+		throw error;
 	}
+
+	notifyIndex = 0;
+	queuedLength = 0;
 }
 
 function computedOper<T>(this: ComputedNode<T>): T {
 	const flags = this.flags;
+	if (flags === ReactiveFlags.Mutable) {
+		const sub = activeSub;
+		if (sub !== undefined) {
+			const prevDep = sub.depsTail;
+			if (prevDep === undefined) {
+				const nextDep = sub.deps;
+				if (nextDep !== undefined && nextDep.dep === this) {
+					nextDep.version = cycle;
+					sub.depsTail = nextDep;
+				} else {
+					link(this, sub, cycle);
+				}
+			} else if (prevDep.dep !== this) {
+				const nextDep = prevDep.nextDep;
+				if (nextDep !== undefined && nextDep.dep === this) {
+					nextDep.version = cycle;
+					sub.depsTail = nextDep;
+				} else {
+					link(this, sub, cycle);
+				}
+			}
+		}
+		return this.value!;
+	}
+
 	if (
 		flags & ReactiveFlags.Dirty
 		|| (
@@ -342,14 +373,33 @@ function computedOper<T>(this: ComputedNode<T>): T {
 	}
 	const sub = activeSub;
 	if (sub !== undefined) {
-		link(this, sub, cycle);
+		const prevDep = sub.depsTail;
+		if (prevDep === undefined) {
+			const nextDep = sub.deps;
+			if (nextDep !== undefined && nextDep.dep === this) {
+				nextDep.version = cycle;
+				sub.depsTail = nextDep;
+			} else {
+				link(this, sub, cycle);
+			}
+		} else if (prevDep.dep !== this) {
+			const nextDep = prevDep.nextDep;
+			if (nextDep !== undefined && nextDep.dep === this) {
+				nextDep.version = cycle;
+				sub.depsTail = nextDep;
+			} else {
+				link(this, sub, cycle);
+			}
+		}
 	}
 	return this.value!;
 }
 
 function signalOper<T>(this: SignalNode<T>, ...value: [T]): T | void {
 	if (value.length) {
-		if (this.pendingValue !== (this.pendingValue = value[0])) {
+		const nextValue = value[0];
+		if (this.pendingValue !== nextValue) {
+			this.pendingValue = nextValue;
 			this.flags = ReactiveFlags.Mutable | ReactiveFlags.Dirty;
 			const subs = this.subs;
 			if (subs !== undefined) {
@@ -368,13 +418,20 @@ function signalOper<T>(this: SignalNode<T>, ...value: [T]): T | void {
 				}
 			}
 		}
-		let sub = activeSub;
-		while (sub !== undefined) {
+		const sub = activeSub;
+		if (sub !== undefined) {
 			if (sub.flags & (ReactiveFlags.Mutable | ReactiveFlags.Watching)) {
 				link(this, sub, cycle);
-				break;
+			} else {
+				let parent = sub.subs?.sub;
+				while (parent !== undefined) {
+					if (parent.flags & (ReactiveFlags.Mutable | ReactiveFlags.Watching)) {
+						link(this, parent, cycle);
+						break;
+					}
+					parent = parent.subs?.sub;
+				}
 			}
-			sub = sub.subs?.sub;
 		}
 		return this.currentValue;
 	}
