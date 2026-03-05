@@ -571,9 +571,10 @@ function computedOper<T>(this: ComputedNode<T>): T {
 	return this.value!;
 }
 
-function signalOper<T>(this: SignalNode<T>, ...value: [T]): T | void {
-	if (value.length) {
-		if (this.pendingValue !== (this.pendingValue = value[0])) {
+function signalOper<T>(this: SignalNode<T>): T | void {
+	if (arguments.length) {
+		const value = arguments[0] as T;
+		if (this.pendingValue !== (this.pendingValue = value)) {
 			this.flags = ReactiveFlags.Mutable | ReactiveFlags.Dirty;
 			const subs = this.subs;
 			if (subs !== undefined) {
