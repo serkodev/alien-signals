@@ -157,10 +157,13 @@ function propagate(l: Link): void {
 }
 
 function checkDirty(l: Link, sub: ReactiveNode): boolean {
+	const prevActiveSub = activeSub;
 	let stack: StackNode | undefined;
 	let checkDepth = 0;
 	let dirty = false;
+	let erroredComputed: ComputedNode | undefined;
 
+	try {
 	top: do {
 		const dep = l.dep;
 		const flags = dep.flags;
@@ -169,10 +172,17 @@ function checkDirty(l: Link, sub: ReactiveNode): boolean {
 			dirty = true;
 		} else if ((flags & (ReactiveFlags.Mutable | ReactiveFlags.Dirty)) === (ReactiveFlags.Mutable | ReactiveFlags.Dirty)) {
 			// Direct dispatch: check depsTail to determine computed vs signal
-			const updated = dep.depsTail !== undefined
-				? updateComputed(dep as ComputedNode)
-				: updateSignal(dep as SignalNode);
-			if (updated) {
+			if (dep.depsTail !== undefined) {
+				erroredComputed = dep as ComputedNode;
+				if (updateComputedDirect(dep as ComputedNode)) {
+					const subs = dep.subs!;
+					if (subs.nextSub !== undefined) {
+						shallowPropagate(subs);
+					}
+					dirty = true;
+				}
+				erroredComputed = undefined;
+			} else if (updateSignal(dep as SignalNode)) {
 				const subs = dep.subs!;
 				if (subs.nextSub !== undefined) {
 					shallowPropagate(subs);
@@ -208,13 +218,16 @@ function checkDirty(l: Link, sub: ReactiveNode): boolean {
 			}
 			if (dirty) {
 				// In ascending phase, sub is always a computed
-				if (updateComputed(sub as ComputedNode)) {
+				erroredComputed = sub as ComputedNode;
+				if (updateComputedDirect(sub as ComputedNode)) {
+					erroredComputed = undefined;
 					if (hasMultipleSubs) {
 						shallowPropagate(firstSub);
 					}
 					sub = l.sub;
 					continue;
 				}
+				erroredComputed = undefined;
 				dirty = false;
 			} else {
 				sub.flags &= ~ReactiveFlags.Pending;
@@ -229,6 +242,13 @@ function checkDirty(l: Link, sub: ReactiveNode): boolean {
 
 		return dirty;
 	} while (true);
+	} finally {
+		if (erroredComputed !== undefined) {
+			erroredComputed.flags &= ~ReactiveFlags.RecursedCheck;
+			purgeDeps(erroredComputed);
+		}
+		activeSub = prevActiveSub;
+	}
 }
 
 function shallowPropagate(l: Link): void {
@@ -437,6 +457,32 @@ export function trigger(fn: () => void) {
 	}
 }
 
+// Fast path: no try/finally, activeSub managed by caller (checkDirty)
+function updateComputedDirect(c: ComputedNode): boolean {
+	++cycle;
+	c.depsTail = undefined;
+	c.flags = ReactiveFlags.Mutable | ReactiveFlags.RecursedCheck;
+	activeSub = c;
+	const oldValue = c.value;
+	const newValue = c.getter(oldValue);
+	c.value = newValue;
+	c.flags = ReactiveFlags.Mutable;
+	const dt = c.depsTail;
+	if (dt !== undefined) {
+		let d = dt.nextDep;
+		while (d !== undefined) {
+			d = unlinkNode(d, c);
+		}
+	} else {
+		let d = c.deps;
+		while (d !== undefined) {
+			d = unlinkNode(d, c);
+		}
+	}
+	return oldValue !== newValue;
+}
+
+// Safe path: with try/finally for use by computedOper and external callers
 function updateComputed(c: ComputedNode): boolean {
 	++cycle;
 	c.depsTail = undefined;
@@ -448,7 +494,7 @@ function updateComputed(c: ComputedNode): boolean {
 		return oldValue !== (c.value = c.getter(oldValue));
 	} finally {
 		activeSub = prevSub;
-		c.flags &= ~ReactiveFlags.RecursedCheck;
+		c.flags = ReactiveFlags.Mutable;
 		const dt = c.depsTail;
 		if (dt !== undefined) {
 			let d = dt.nextDep;
@@ -487,7 +533,7 @@ function run(e: EffectNode): void {
 			(e as EffectNode).fn();
 		} finally {
 			activeSub = prevSub;
-			e.flags &= ~ReactiveFlags.RecursedCheck;
+			e.flags = ReactiveFlags.Watching;
 			const dt = e.depsTail;
 			if (dt !== undefined) {
 				let d = dt.nextDep;
