@@ -162,6 +162,7 @@ function checkDirty(l: Link, sub: ReactiveNode): boolean {
 	let checkDepth = 0;
 	let dirty = false;
 	let erroredComputed: ComputedNode | undefined;
+	++cycle;
 
 	try {
 	top: do {
@@ -458,8 +459,8 @@ export function trigger(fn: () => void) {
 }
 
 // Fast path: no try/finally, activeSub managed by caller (checkDirty)
+// cycle is incremented once in checkDirty, not per-call
 function updateComputedDirect(c: ComputedNode): boolean {
-	++cycle;
 	c.depsTail = undefined;
 	c.flags = ReactiveFlags.Mutable | ReactiveFlags.RecursedCheck;
 	activeSub = c;
